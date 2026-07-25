@@ -5,12 +5,14 @@ OptikLink 自动登录脚本 v4.3-fixed（仅必要修复版）
 - 增加 /error/vpn 检测
 - 保持原始 Dashboard 判断逻辑不变
 - 到期时间自动从页面提取
+- 修复 Telegram Markdown 解析错误
 """
 
 import os
 import re
 import sys
 import time
+import html
 from datetime import datetime, timezone
 from urllib.parse import urlparse, parse_qs, urlencode
 
@@ -80,15 +82,22 @@ def create_session():
 _tg_session = None
 
 def tg_send(title: str, content: str):
-    """发送 Telegram 消息（Markdown），带自动重试（3次）"""
+    """发送 Telegram 消息（HTML格式），带自动重试（3次）"""
     global _tg_session
     if _tg_session is None:
         _tg_session = _req.Session()
         _tg_session.headers.update({"Content-Type": "application/json"})
 
     url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
-    text = f"*{title}*\n\n{content}"
-    payload = {"chat_id": TG_CHAT_ID, "text": text, "parse_mode": "Markdown", "disable_web_page_preview": True}
+    
+    # ✅ 使用 HTML 格式避免 Markdown 特殊字符冲突
+    # 对 title 和 content 进行 HTML 转义
+    escaped_title = html.escape(title)
+    escaped_content = html.escape(content)
+    
+    # 构建 HTML 格式的消息：粗体标题 + 等宽字体内容（更清晰）
+    text = f"<b>{escaped_title}</b>\n\n<pre>{escaped_content}</pre>"
+    payload = {"chat_id": TG_CHAT_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
 
     for attempt in range(3):
         try:
@@ -246,19 +255,19 @@ def check_dashboard(session):
     r = session.get("https://optiklink.net", timeout=15, headers=HEADERS_BROWSER, allow_redirects=True)
     print(f"    状态码: {r.status_code} 最终URL: {mask_url(r.url)}")
     info = {"logged_in": False, "username": "N/A", "expire_date": EXPIRE_DATE_RAW, "running_servers": "N/A"}
-    html = r.text
+    html_content = r.text
     
     # 原始判断逻辑
-    if "DASHBOARD" in html.upper() and "/error/" not in r.url:
+    if "DASHBOARD" in html_content.upper() and "/error/" not in r.url:
         info["logged_in"] = True
-        m = re.search(r'Welcome\s+<[^>]+>([^<]+)</[^>]+>\s+to your Dashboard', html, re.I)
+        m = re.search(r'Welcome\s+<[^>]+>([^<]+)</[^>]+>\s+to your Dashboard', html_content, re.I)
         if m:
             info["username"] = m.group(1)
-        m2 = re.search(r'(\d+)\s+servers?', html, re.I)
+        m2 = re.search(r'(\d+)\s+servers?', html_content, re.I)
         if m2:
             info["running_servers"] = m2.group(1)
         # 提取到期日期
-        m3 = re.search(r'(\d{2}\.\d{2}\.\d{4})', html)
+        m3 = re.search(r'(\d{2}\.\d{2}\.\d{4})', html_content)
         if m3:
             info["expire_date"] = m3.group(1)
             print(f"    提取到期日期: {info['expire_date']}")
@@ -336,23 +345,23 @@ def build_report(info, server_result):
         pass
 
     lines = [
-        f"## OptikLink 自动登录报告",
-        f"**状态**: {status}",
-        f"**用户名**: {info['username']}",
-        f"**运行服务器**: {info['running_servers']} 个",
-        f"**服务到期**: {info['expire_date']}",
-        f"**剩余天数**: {days_left} 天",
-        f"**执行时间**: {now.strftime('%Y-%m-%d %H:%M:%S')} UTC",
+        f"OptikLink 自动登录报告",
+        f"状态: {status}",
+        f"用户名: {info['username']}",
+        f"运行服务器: {info['running_servers']} 个",
+        f"服务到期: {info['expire_date']}",
+        f"剩余天数: {days_left} 天",
+        f"执行时间: {now.strftime('%Y-%m-%d %H:%M:%S')} UTC",
     ]
     if not server_result.get("skipped"):
         if "error" in server_result:
-            lines.append(f"**服务器保活**: ❌ {server_result['error'][:100]}")
+            lines.append(f"服务器保活: ❌ {server_result['error'][:100]}")
         else:
-            lines.append(f"**服务器ID**: {server_result['server_id']}")
-            lines.append(f"**启动前状态**: {server_result['status_before']}")
-            lines.append(f"**启动后状态**: {server_result['status_after']}")
+            lines.append(f"服务器ID: {server_result['server_id']}")
+            lines.append(f"启动前状态: {server_result['status_before']}")
+            lines.append(f"启动后状态: {server_result['status_after']}")
             if server_result['action_taken'] == 'start':
-                lines.append("**操作**: ▶️ 已自动启动")
+                lines.append("操作: ▶️ 已自动启动")
     return "\n".join(lines)
 
 # ─────────────────────────────────────────────────────────────
